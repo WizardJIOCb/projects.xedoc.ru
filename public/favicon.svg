@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Xedoc Projects">
+  <defs>
+    <linearGradient id="bg" x1="10" y1="8" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#18211f"/>
+      <stop offset="1" stop-color="#101418"/>
+    </linearGradient>
+    <linearGradient id="wire" x1="12" y1="14" x2="52" y2="52" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2dd4bf"/>
+      <stop offset="1" stop-color="#60a5fa"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="2.2" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.18 0 0 0 0 0.82 0 0 0 0 0.75 0 0 0 0.72 0"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect x="4" y="4" width="56" height="56" rx="13" fill="url(#bg)"/>
+  <path d="M18 18h12l8 10 8-10h6L41 32l12 14h-12l-8-10-8 10h-6l11-14L18 18Z" fill="#f8fffc" opacity="0.96"/>
+  <g filter="url(#glow)" stroke="url(#wire)" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M17 17 32 32 47 17"/>
+    <path d="M17 47 32 32 47 47"/>
+    <path d="M17 17v30"/>
+    <path d="M47 17v30"/>
+  </g>
+  <g fill="#f8fffc" stroke="#0f766e" stroke-width="2.2">
+    <circle cx="17" cy="17" r="5.2"/>
+    <circle cx="47" cy="17" r="5.2"/>
+    <circle cx="32" cy="32" r="5.6"/>
+    <circle cx="17" cy="47" r="5.2"/>
+    <circle cx="47" cy="47" r="5.2"/>
+  </g>
+  <circle cx="32" cy="32" r="2.2" fill="#2563eb"/>
+</svg>
