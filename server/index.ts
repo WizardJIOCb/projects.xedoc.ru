@@ -27,6 +27,9 @@ function readBearer(req: express.Request) {
   if (header.startsWith("Bearer ")) {
     return header.slice("Bearer ".length).trim();
   }
+  if (typeof req.query.token === "string") {
+    return req.query.token.trim();
+  }
   return "";
 }
 
@@ -60,6 +63,50 @@ function requireProject(db: DatabaseShape, projectId: string) {
     throw error;
   }
   return project;
+}
+
+function chatKey(projectId: string, chatId: string) {
+  return `${projectId}:${chatId}`;
+}
+
+const chatClients = new Map<string, Set<express.Response>>();
+
+function getChatPayload(db: DatabaseShape, projectId: string, chatId: string) {
+  requireProject(db, projectId);
+  const chat = db.chats.find((item) => item.id === chatId && item.projectId === projectId);
+  if (!chat) {
+    const error = new Error("Chat not found");
+    (error as Error & { status?: number }).status = 404;
+    throw error;
+  }
+  return {
+    chat,
+    messages: db.messages.filter((message) => message.chatId === chat.id).slice(-200),
+    runs: db.modelRuns.filter((run) => run.chatId === chat.id).slice(-50)
+  };
+}
+
+function writeChatEvent(res: express.Response, event: string, data: unknown) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+function emitChatEvent(projectId: string, chatId: string, event = "chat_updated") {
+  const clients = chatClients.get(chatKey(projectId, chatId));
+  if (!clients?.size) {
+    return;
+  }
+
+  let payload: ReturnType<typeof getChatPayload>;
+  try {
+    payload = getChatPayload(store.snapshot(), projectId, chatId);
+  } catch (error) {
+    payload = { chat: undefined, messages: [], runs: [], error: error instanceof Error ? error.message : String(error) } as unknown as ReturnType<typeof getChatPayload>;
+  }
+
+  for (const client of clients) {
+    writeChatEvent(client, event, payload);
+  }
 }
 
 function refreshProjectGraphStats(db: DatabaseShape, projectId: string) {
@@ -272,6 +319,7 @@ function createModelRun(input: {
   contextNodes: string[];
   contextEdges: string[];
   latencyMs: number;
+  status?: ModelRun["status"];
   metadata?: Record<string, unknown>;
   error?: string;
 }): ModelRun {
@@ -285,7 +333,7 @@ function createModelRun(input: {
     contextNodes: input.contextNodes,
     contextEdges: input.contextEdges,
     latencyMs: input.latencyMs,
-    status: input.error ? "failed" : "succeeded",
+    status: input.status || (input.error ? "failed" : "succeeded"),
     error: input.error,
     input: input.input,
     output: input.output,
@@ -389,6 +437,111 @@ function addChatGraphArtifacts(db: DatabaseShape, message: Message, run?: ModelR
         metadata: {}
       });
     }
+  }
+}
+
+function normalizeExternalRunStatus(status: string, hasFinalContent = false): ModelRun["status"] {
+  if (hasFinalContent || status === "completed" || status === "succeeded") {
+    return "succeeded";
+  }
+  if (status === "failed" || status === "cancelled") {
+    return "failed";
+  }
+  if (status === "queued" || status === "pending") {
+    return "queued";
+  }
+  return "running";
+}
+
+async function refreshXedocRun(projectId: string, chatId: string, runId: string) {
+  const snapshot = store.snapshot();
+  requireProject(snapshot, projectId);
+  const pendingRun = snapshot.modelRuns.find((item) => item.id === runId && item.projectId === projectId && item.chatId === chatId);
+  if (!pendingRun) {
+    throw new Error("Run not found");
+  }
+  const jobId = typeof pendingRun.metadata?.xedocJobId === "string" ? pendingRun.metadata.xedocJobId : "";
+  if (pendingRun.provider !== "xedoc-agent" || !jobId) {
+    throw new Error("Run is not linked to an xedoc-agent job");
+  }
+
+  const external = await refreshXedocAgentJob(jobId);
+  const status = external.job?.status || "unknown";
+  const finalContent = external.finalMessage || external.assistantMessage?.content || "";
+  const nextStatus = normalizeExternalRunStatus(status, Boolean(finalContent));
+
+  const result = await store.update((db) => {
+    requireProject(db, projectId);
+    const run = db.modelRuns.find((item) => item.id === runId && item.projectId === projectId && item.chatId === chatId);
+    if (!run) {
+      throw new Error("Run not found");
+    }
+
+    run.status = nextStatus;
+    run.error = run.status === "failed" ? (external.job?.error || `External job ${status}`) : undefined;
+    run.output = finalContent || [
+      `xedoc-agent job ${jobId}`,
+      `Status: ${status}.`,
+      "Answer is not ready yet; the live channel will update this chat automatically."
+    ].join("\n");
+    run.metadata = { ...(run.metadata || {}), xedocJobStatus: status };
+
+    const assistantMessageId = typeof run.metadata?.assistantMessageId === "string" ? run.metadata.assistantMessageId : "";
+    const assistantMessage = db.messages.find((message) => message.id === assistantMessageId);
+    if (assistantMessage) {
+      assistantMessage.content = run.output || "";
+      assistantMessage.provider = run.provider;
+      assistantMessage.model = run.model;
+      assistantMessage.tokensOut = Math.ceil((run.output || "").length / 4);
+    }
+
+    const chat = db.chats.find((item) => item.id === chatId && item.projectId === projectId);
+    if (chat) {
+      chat.updatedAt = nowIso();
+    }
+    refreshProjectGraphStats(db, projectId);
+
+    return { run, assistantMessage };
+  });
+
+  emitChatEvent(projectId, chatId, "run_updated");
+  return result;
+}
+
+const pollingRunIds = new Set<string>();
+
+function shouldPollXedocRun(run: ModelRun) {
+  if (run.provider !== "xedoc-agent" || typeof run.metadata?.xedocJobId !== "string") {
+    return false;
+  }
+  if (run.status === "queued" || run.status === "running") {
+    return true;
+  }
+  const output = (run.output || "").toLowerCase();
+  return run.status === "succeeded"
+    && (output.includes("status: queued")
+      || output.includes("status was queued")
+      || output.includes("\u0441\u0442\u0430\u0442\u0443\u0441: queued")
+      || output.includes("polling/streaming"));
+}
+
+async function pollPendingXedocRuns() {
+  const pendingRuns = store.snapshot().modelRuns
+    .filter(shouldPollXedocRun)
+    .slice(0, 10);
+
+  for (const run of pendingRuns) {
+    if (pollingRunIds.has(run.id)) {
+      continue;
+    }
+    pollingRunIds.add(run.id);
+    void refreshXedocRun(run.projectId, run.chatId, run.id)
+      .catch((error) => {
+        console.warn(`Failed to refresh xedoc run ${run.id}:`, error instanceof Error ? error.message : error);
+      })
+      .finally(() => {
+        pollingRunIds.delete(run.id);
+      });
   }
 }
 
@@ -760,6 +913,7 @@ app.patch("/api/projects/:projectId/chats/:chatId", async (req, res, next) => {
       item.updatedAt = nowIso();
       return item;
     });
+    emitChatEvent(req.params.projectId, req.params.chatId);
     res.json({ chat });
   } catch (error) {
     next(error);
@@ -768,16 +922,39 @@ app.patch("/api/projects/:projectId/chats/:chatId", async (req, res, next) => {
 
 app.get("/api/projects/:projectId/chats/:chatId", (req, res, next) => {
   try {
-    const db = store.snapshot();
-    requireProject(db, req.params.projectId);
-    const chat = db.chats.find((item) => item.id === req.params.chatId && item.projectId === req.params.projectId);
-    if (!chat) {
-      res.status(404).json({ error: "Chat not found" });
-      return;
-    }
-    const messages = db.messages.filter((message) => message.chatId === chat.id).slice(-200);
-    const runs = db.modelRuns.filter((run) => run.chatId === chat.id).slice(-50);
-    res.json({ chat, messages, runs });
+    res.json(getChatPayload(store.snapshot(), req.params.projectId, req.params.chatId));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/projects/:projectId/chats/:chatId/events", (req, res, next) => {
+  try {
+    const payload = getChatPayload(store.snapshot(), req.params.projectId, req.params.chatId);
+    const key = chatKey(req.params.projectId, req.params.chatId);
+    const clients = chatClients.get(key) || new Set<express.Response>();
+    clients.add(res);
+    chatClients.set(key, clients);
+
+    res.status(200);
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders?.();
+
+    writeChatEvent(res, "hello", payload);
+    const heartbeat = setInterval(() => {
+      writeChatEvent(res, "ping", { time: nowIso() });
+    }, 25_000);
+
+    req.on("close", () => {
+      clearInterval(heartbeat);
+      clients.delete(res);
+      if (clients.size === 0) {
+        chatClients.delete(key);
+      }
+    });
   } catch (error) {
     next(error);
   }
@@ -807,10 +984,13 @@ app.post("/api/projects/:projectId/chats/:chatId/messages", async (req, res, nex
       chat.updatedAt = nowIso();
       return userMessage;
     });
+    emitChatEvent(req.params.projectId, req.params.chatId);
 
     const context = await buildChatContext(store.snapshot(), req.params.projectId, req.params.chatId, body.content);
     const started = Date.now();
     const completion = await completeChat(context.chat, context);
+    const xedocJobStatus = typeof completion.metadata?.xedocJobStatus === "string" ? completion.metadata.xedocJobStatus : "";
+    const hasXedocJob = completion.provider === "xedoc-agent" && typeof completion.metadata?.xedocJobId === "string";
     const run = createModelRun({
       projectId: req.params.projectId,
       chatId: req.params.chatId,
@@ -821,6 +1001,7 @@ app.post("/api/projects/:projectId/chats/:chatId/messages", async (req, res, nex
       contextNodes: context.contextNodes,
       contextEdges: context.contextEdges,
       latencyMs: Date.now() - started,
+      status: hasXedocJob ? normalizeExternalRunStatus(xedocJobStatus) : undefined,
       metadata: completion.metadata,
       error: completion.error
     });
@@ -856,6 +1037,7 @@ app.post("/api/projects/:projectId/chats/:chatId/messages", async (req, res, nex
 
       return { userMessage, assistantMessage, run };
     });
+    emitChatEvent(req.params.projectId, req.params.chatId);
 
     res.status(201).json(result);
   } catch (error) {
@@ -1112,6 +1294,12 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
 });
 
 await store.init();
+const xedocPollInterval = setInterval(() => {
+  void pollPendingXedocRuns();
+}, Number(process.env.XEDOC_MODEL_API_POLL_MS || 5_000));
+xedocPollInterval.unref?.();
+void pollPendingXedocRuns();
+
 app.listen(port, "0.0.0.0", () => {
   console.log(`Xedoc Projects listening on ${port}`);
 });

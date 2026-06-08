@@ -28,7 +28,7 @@ import {
   Split,
   Trash2
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Navigate, NavLink, Route, BrowserRouter as Router, Routes, useNavigate, useParams } from "react-router-dom";
 import { Background, Controls, MiniMap, ReactFlow, type Edge, type Node, type NodeMouseHandler } from "@xyflow/react";
@@ -586,6 +586,8 @@ function ChatsPanel({ project }: { project: Project }) {
   const [sending, setSending] = useState(false);
   const [refreshingRunId, setRefreshingRunId] = useState("");
   const [chatError, setChatError] = useState("");
+  const [liveStatus, setLiveStatus] = useState<"connecting" | "live" | "offline">("connecting");
+  const messagesRef = useRef<HTMLDivElement | null>(null);
 
   const chats = chatsState.data?.chats || [];
   const selectedChat = selectedChatId || chats[0]?.id || "";
@@ -600,6 +602,49 @@ function ChatsPanel({ project }: { project: Project }) {
       setSelectedChatId(chats[0].id);
     }
   }, [chats, selectedChatId]);
+
+  useEffect(() => {
+    if (!selectedChat) {
+      return;
+    }
+
+    setLiveStatus("connecting");
+    const token = getToken();
+    const tokenParam = token ? `?token=${encodeURIComponent(token)}` : "";
+    const events = new EventSource(`/api/projects/${project.id}/chats/${selectedChat}/events${tokenParam}`);
+
+    function applyChatPayload(event: MessageEvent) {
+      try {
+        const payload = JSON.parse(event.data) as ChatPayload;
+        if (payload.chat?.id !== selectedChat) {
+          return;
+        }
+        chatState.setData(payload);
+        void chatsState.reload();
+        void graphState.reload();
+      } catch (error) {
+        setChatError(error instanceof Error ? error.message : String(error));
+      }
+    }
+
+    events.onopen = () => setLiveStatus("live");
+    events.onerror = () => setLiveStatus("offline");
+    events.addEventListener("hello", (event) => {
+      setLiveStatus("live");
+      applyChatPayload(event as MessageEvent);
+    });
+    events.addEventListener("chat_updated", (event) => {
+      setLiveStatus("live");
+      applyChatPayload(event as MessageEvent);
+    });
+    events.addEventListener("run_updated", (event) => {
+      setLiveStatus("live");
+      applyChatPayload(event as MessageEvent);
+    });
+    events.addEventListener("ping", () => setLiveStatus("live"));
+
+    return () => events.close();
+  }, [project.id, selectedChat, chatState.setData, chatsState.reload, graphState.reload]);
 
   async function createChat() {
     if (!newChatTitle.trim()) {
@@ -685,6 +730,19 @@ function ChatsPanel({ project }: { project: Project }) {
   }, [latestRun, graphNodesById]);
   const messages = chatState.data?.messages || [];
   const configuredModelCount = modelsState.data?.providers.filter((provider) => provider.configured).length || 0;
+  const lastMessage = messages[messages.length - 1];
+  const scrollSignal = `${selectedChat}:${messages.length}:${lastMessage?.id || ""}:${lastMessage?.content.length || 0}:${sending}`;
+
+  useEffect(() => {
+    const container = messagesRef.current;
+    if (!container) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
+    });
+  }, [scrollSignal]);
 
   return (
     <section className="chat-layout">
@@ -723,6 +781,7 @@ function ChatsPanel({ project }: { project: Project }) {
               <span>{messages.length} messages</span>
               <span>{recentRuns.length} recent runs</span>
               <span>{project.graph.totalNodes} graph nodes</span>
+              <span className={classNames("live-pill", liveStatus)}>{liveStatus}</span>
             </div>
           </div>
           <div className="model-picker">
@@ -746,7 +805,7 @@ function ChatsPanel({ project }: { project: Project }) {
             </p>
           </div>
         </div>
-        <div className="messages">
+        <div className="messages" ref={messagesRef}>
           {chatState.loading && <div className="inline-loading"><Loader2 className="spin" /> Loading chat</div>}
           {messages.map((message: Message) => (
             <article key={message.id} className={classNames("message", message.role)}>

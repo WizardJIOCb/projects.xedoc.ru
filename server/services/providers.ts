@@ -241,7 +241,11 @@ async function completeWithXedocAgent(chat: Chat, model: string, context: ChatCo
     model,
     content,
     providerState: { ...chat.providerState, xedocChatId, xedocJobId: result.jobId },
-    metadata: { xedocChatId, xedocJobId: result.jobId }
+    metadata: {
+      xedocChatId,
+      xedocJobId: result.jobId,
+      xedocJobStatus: result.finalMessage || result.assistantMessage?.content ? "completed" : result.job?.status || "queued"
+    }
   };
 }
 

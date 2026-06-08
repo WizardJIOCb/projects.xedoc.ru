@@ -704,6 +704,21 @@ pre {
   padding: 4px 8px;
 }
 
+.chat-head-metrics .live-pill.live {
+  background: rgba(15, 118, 110, 0.1);
+  color: #0f766e;
+}
+
+.chat-head-metrics .live-pill.connecting {
+  background: rgba(249, 115, 22, 0.1);
+  color: #9a3412;
+}
+
+.chat-head-metrics .live-pill.offline {
+  background: rgba(185, 28, 28, 0.09);
+  color: #b91c1c;
+}
+
 .model-picker {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
