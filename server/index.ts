@@ -9,7 +9,7 @@ import { createId, hashValue, nowIso, slugify, stableId } from "./lib/ids.js";
 import { cloneOrPull, gitStatus } from "./services/git.js";
 import { buildChatContext } from "./services/context.js";
 import { indexProjectRepository } from "./services/indexer.js";
-import { completeChat, defaultChatSelection, getProviderOptions } from "./services/providers.js";
+import { completeChat, defaultChatSelection, getProviderOptions, refreshXedocAgentJob } from "./services/providers.js";
 import { readRepositoryFile, readRepositoryTree } from "./services/repository.js";
 import { store } from "./services/store.js";
 
@@ -272,6 +272,7 @@ function createModelRun(input: {
   contextNodes: string[];
   contextEdges: string[];
   latencyMs: number;
+  metadata?: Record<string, unknown>;
   error?: string;
 }): ModelRun {
   return {
@@ -288,6 +289,7 @@ function createModelRun(input: {
     error: input.error,
     input: input.input,
     output: input.output,
+    metadata: input.metadata,
     createdAt: nowIso()
   };
 }
@@ -819,6 +821,7 @@ app.post("/api/projects/:projectId/chats/:chatId/messages", async (req, res, nex
       contextNodes: context.contextNodes,
       contextEdges: context.contextEdges,
       latencyMs: Date.now() - started,
+      metadata: completion.metadata,
       error: completion.error
     });
 
@@ -843,6 +846,7 @@ app.post("/api/projects/:projectId/chats/:chatId/messages", async (req, res, nex
         tokensOut: Math.ceil(completion.content.length / 4),
         createdAt: nowIso()
       };
+      run.metadata = { ...(run.metadata || {}), assistantMessageId: assistantMessage.id };
 
       db.modelRuns.push(run);
       db.messages.push(assistantMessage);
@@ -854,6 +858,51 @@ app.post("/api/projects/:projectId/chats/:chatId/messages", async (req, res, nex
     });
 
     res.status(201).json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/projects/:projectId/chats/:chatId/runs/:runId/refresh", async (req, res, next) => {
+  try {
+    const result = await store.update(async (db) => {
+      requireProject(db, req.params.projectId);
+      const run = db.modelRuns.find((item) => item.id === req.params.runId && item.projectId === req.params.projectId && item.chatId === req.params.chatId);
+      if (!run) {
+        throw new Error("Run not found");
+      }
+      const jobId = typeof run.metadata?.xedocJobId === "string" ? run.metadata.xedocJobId : "";
+      if (run.provider !== "xedoc-agent" || !jobId) {
+        throw new Error("Run is not linked to an xedoc-agent job");
+      }
+
+      const external = await refreshXedocAgentJob(jobId);
+      const status = external.job?.status || "unknown";
+      const finalContent = external.finalMessage || external.assistantMessage?.content;
+      run.status = status === "completed"
+        ? "succeeded"
+        : status === "failed" || status === "cancelled"
+          ? "failed"
+          : "running";
+      run.error = run.status === "failed" ? (external.job?.error || `External job ${status}`) : undefined;
+      run.output = finalContent || [
+        `xedoc-agent job ${jobId}`,
+        `Статус: ${status}.`,
+        "Ответ ещё не готов; обнови run позже."
+      ].join("\n");
+
+      const assistantMessageId = typeof run.metadata?.assistantMessageId === "string" ? run.metadata.assistantMessageId : "";
+      const assistantMessage = db.messages.find((message) => message.id === assistantMessageId);
+      if (assistantMessage) {
+        assistantMessage.content = run.output;
+        assistantMessage.provider = run.provider;
+        assistantMessage.model = run.model;
+        assistantMessage.tokensOut = Math.ceil(run.output.length / 4);
+      }
+
+      return { run, assistantMessage };
+    });
+    res.json(result);
   } catch (error) {
     next(error);
   }

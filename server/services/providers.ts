@@ -6,6 +6,7 @@ export interface CompletionResult {
   model: string;
   content: string;
   providerState?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
   error?: string;
 }
 
@@ -221,8 +222,29 @@ async function completeWithXedocAgent(chat: Chat, model: string, context: ChatCo
     provider: "xedoc-agent",
     model,
     content,
-    providerState: { ...chat.providerState, xedocChatId, xedocJobId: result.jobId }
+    providerState: { ...chat.providerState, xedocChatId, xedocJobId: result.jobId },
+    metadata: { xedocChatId, xedocJobId: result.jobId }
   };
+}
+
+export async function refreshXedocAgentJob(jobId: string) {
+  const base = normalizeBaseUrl(process.env.XEDOC_MODEL_API_BASE, "");
+  const token = process.env.XEDOC_MODEL_API_TOKEN?.trim();
+  if (!base || !token) {
+    throw new Error("XEDOC_MODEL_API_BASE/TOKEN are not configured for xedoc-agent");
+  }
+
+  return fetchJson<{
+    jobId: string;
+    finalMessage?: string;
+    assistantMessage?: { content?: string };
+    job?: { status?: string; exitCode?: number | null; error?: string | null };
+  }>(`${base}/api/external/model/jobs/${encodeURIComponent(jobId)}`, {
+    method: "GET",
+    headers: {
+      "Authorization": `Bearer ${token}`
+    }
+  }, 30_000);
 }
 
 async function completeOpenAICompatible(provider: string, model: string, context: ChatContextPack): Promise<CompletionResult> {

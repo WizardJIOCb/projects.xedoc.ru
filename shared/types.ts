@@ -178,6 +178,7 @@ export interface ModelRun {
   error?: string;
   input: string;
   output?: string;
+  metadata?: Record<string, unknown>;
   createdAt: string;
 }
 

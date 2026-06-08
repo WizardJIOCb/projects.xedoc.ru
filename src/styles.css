@@ -743,6 +743,17 @@ pre {
   gap: 8px;
 }
 
+.run-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.icon-button.mini {
+  width: 28px;
+  min-height: 28px;
+}
+
 .run-card > span {
   color: #4b5563;
   font-size: 13px;

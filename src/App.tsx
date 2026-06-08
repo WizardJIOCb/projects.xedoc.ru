@@ -532,6 +532,7 @@ function ChatsPanel({ project }: { project: Project }) {
   const [newChatTitle, setNewChatTitle] = useState("");
   const [content, setContent] = useState("");
   const [sending, setSending] = useState(false);
+  const [refreshingRunId, setRefreshingRunId] = useState("");
   const [chatError, setChatError] = useState("");
 
   const chats = chatsState.data?.chats || [];
@@ -593,6 +594,20 @@ function ChatsPanel({ project }: { project: Project }) {
       setChatError(error instanceof Error ? error.message : String(error));
     } finally {
       setSending(false);
+    }
+  }
+
+  async function refreshRun(runId: string) {
+    if (!selectedChat) return;
+    setRefreshingRunId(runId);
+    setChatError("");
+    try {
+      await api(`/api/projects/${project.id}/chats/${selectedChat}/runs/${runId}/refresh`, { method: "POST" });
+      await chatState.reload();
+    } catch (error) {
+      setChatError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRefreshingRunId("");
     }
   }
 
@@ -682,7 +697,14 @@ function ChatsPanel({ project }: { project: Project }) {
             <article key={run.id} className="run-card">
               <header>
                 <strong>{run.provider}</strong>
-                <StatusPill status={run.status} />
+                <div className="run-actions">
+                  {run.provider === "xedoc-agent" && (
+                    <button className="icon-button mini" onClick={() => void refreshRun(run.id)} title="Refresh external job">
+                      {refreshingRunId === run.id ? <Loader2 className="spin" size={14} /> : <RefreshCw size={14} />}
+                    </button>
+                  )}
+                  <StatusPill status={run.status} />
+                </div>
               </header>
               <span>{run.model}</span>
               <div>
