@@ -941,12 +941,21 @@ app.post("/api/workers/jobs/:jobId/error", async (req, res, next) => {
 
 const staticDir = path.resolve(process.cwd(), "dist");
 if (fs.existsSync(staticDir)) {
-  app.use(express.static(staticDir, { maxAge: "1h" }));
+  app.use("/assets", express.static(path.join(staticDir, "assets"), { immutable: true, maxAge: "30d" }));
+  app.use(express.static(staticDir, {
+    maxAge: 0,
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith("index.html")) {
+        res.setHeader("Cache-Control", "no-cache");
+      }
+    }
+  }));
   app.use((req, res, next) => {
     if (req.method !== "GET" || req.path.startsWith("/api")) {
       next();
       return;
     }
+    res.setHeader("Cache-Control", "no-cache");
     res.sendFile(path.join(staticDir, "index.html"));
   });
 }
