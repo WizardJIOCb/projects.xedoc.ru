@@ -134,6 +134,13 @@ function parseXedocAgentModel(model: string) {
   };
 }
 
+function limitText(value: string, maxLength: number) {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return `${value.slice(0, Math.max(0, maxLength - 80))}\n\n[context truncated to fit provider gateway limit]`;
+}
+
 async function fetchJson<T>(url: string, init: RequestInit, timeoutMs = 120_000): Promise<T> {
   const timeout = timeoutSignal(timeoutMs);
   try {
@@ -180,6 +187,7 @@ async function completeWithXedocAgent(chat: Chat, model: string, context: ChatCo
   }
 
   const parsedModel = parseXedocAgentModel(model);
+  const externalPrompt = limitText([context.systemPrompt, "", context.userPrompt].join("\n\n"), 15_800);
   const result = await fetchJson<{
     finalMessage?: string;
     assistantMessage?: { content?: string };
@@ -189,8 +197,8 @@ async function completeWithXedocAgent(chat: Chat, model: string, context: ChatCo
     method: "POST",
     headers,
     body: JSON.stringify({
-      prompt: [context.systemPrompt, "", context.userPrompt].join("\n\n"),
-      displayPrompt: context.userMessage,
+      prompt: externalPrompt,
+      displayPrompt: limitText(context.userMessage, 12_000),
       kind: parsedModel.kind,
       model: parsedModel.model,
       reasoningEffort: "high",
