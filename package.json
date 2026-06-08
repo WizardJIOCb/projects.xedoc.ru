@@ -1,0 +1,42 @@
+{
+  "name": "projects.xedoc.ru",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "tsx watch server/index.ts",
+    "dev:web": "vite --host 0.0.0.0",
+    "build": "vite build && tsc -p tsconfig.server.json",
+    "check": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
+    "start": "node dist-server/server/index.js"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^4.5.2",
+    "@xyflow/react": "^12.8.2",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "lucide-react": "^0.515.0",
+    "morgan": "^1.10.0",
+    "nanoid": "^5.1.5",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-router-dom": "^7.6.2",
+    "zod": "^3.25.64"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.3",
+    "@types/morgan": "^1.9.9",
+    "@types/node": "^24.0.1",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "concurrently": "^9.2.0",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
