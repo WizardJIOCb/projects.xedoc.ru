@@ -206,7 +206,7 @@ async function completeWithXedocAgent(chat: Chat, model: string, context: ChatCo
       model: parsedModel.model,
       reasoningEffort: process.env.XEDOC_MODEL_API_REASONING_EFFORT || "low",
       speed: "standard",
-      waitMs: Number(process.env.XEDOC_MODEL_API_WAIT_MS || 1500),
+      waitMs: Number(process.env.XEDOC_MODEL_API_WAIT_MS || 0),
       agentId: process.env.XEDOC_MODEL_API_AGENT_ID,
       repoId: process.env.XEDOC_MODEL_API_REPO_ID
     })
