@@ -7,7 +7,9 @@ import { z } from "zod";
 import type { DatabaseShape, EdgeType, GraphEdge, GraphNode, Message, ModelRun, NodeType, WorkerInfo } from "../shared/types.js";
 import { createId, hashValue, nowIso, slugify, stableId } from "./lib/ids.js";
 import { cloneOrPull, gitStatus } from "./services/git.js";
+import { buildChatContext } from "./services/context.js";
 import { indexProjectRepository } from "./services/indexer.js";
+import { completeChat, defaultChatSelection, getProviderOptions } from "./services/providers.js";
 import { readRepositoryFile, readRepositoryTree } from "./services/repository.js";
 import { store } from "./services/store.js";
 
@@ -260,6 +262,36 @@ function createGraphAnswer(db: DatabaseShape, projectId: string, chatId: string,
   return { answer: lines.join("\n"), run, contextNodes, contextEdges };
 }
 
+function createModelRun(input: {
+  projectId: string;
+  chatId: string;
+  provider: string;
+  model: string;
+  input: string;
+  output: string;
+  contextNodes: string[];
+  contextEdges: string[];
+  latencyMs: number;
+  error?: string;
+}): ModelRun {
+  return {
+    id: createId("run"),
+    projectId: input.projectId,
+    chatId: input.chatId,
+    provider: input.provider,
+    model: input.model,
+    temperature: 0.2,
+    contextNodes: input.contextNodes,
+    contextEdges: input.contextEdges,
+    latencyMs: input.latencyMs,
+    status: input.error ? "failed" : "succeeded",
+    error: input.error,
+    input: input.input,
+    output: input.output,
+    createdAt: nowIso()
+  };
+}
+
 function addChatGraphArtifacts(db: DatabaseShape, message: Message, run?: ModelRun, contextNodes: string[] = []) {
   const createdAt = nowIso();
   const chatNodeId = stableId("node", [message.projectId, "Chat", message.chatId]);
@@ -410,13 +442,14 @@ app.post("/api/projects", async (req, res, next) => {
         }
       };
 
+      const defaultChat = defaultChatSelection();
       db.projects.unshift(item);
       db.chats.push({
         id: chatId,
         projectId: id,
         title: "Architecture",
-        provider: "xedoc-simulator",
-        model: "graph-mvp",
+        provider: defaultChat.provider,
+        model: defaultChat.model,
         retrievalMode: "graph",
         createdAt: now,
         updatedAt: now
@@ -672,18 +705,19 @@ app.post("/api/projects/:projectId/chats", async (req, res, next) => {
   try {
     const body = z.object({
       title: z.string().min(1).max(90),
-      provider: z.string().max(80).default("xedoc-simulator"),
-      model: z.string().max(120).default("graph-mvp")
+      provider: z.string().max(80).optional(),
+      model: z.string().max(120).optional()
     }).parse(req.body);
     const chat = await store.update((db) => {
       requireProject(db, req.params.projectId);
       const now = nowIso();
+      const defaultChat = defaultChatSelection();
       const item = {
         id: createId("chat"),
         projectId: req.params.projectId,
         title: body.title,
-        provider: body.provider,
-        model: body.model,
+        provider: body.provider || defaultChat.provider,
+        model: body.model || defaultChat.model,
         retrievalMode: "graph" as const,
         createdAt: now,
         updatedAt: now
@@ -692,6 +726,39 @@ app.post("/api/projects/:projectId/chats", async (req, res, next) => {
       return item;
     });
     res.status(201).json({ chat });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/projects/:projectId/chats/:chatId", async (req, res, next) => {
+  try {
+    const body = z.object({
+      title: z.string().min(1).max(90).optional(),
+      provider: z.string().max(80).optional(),
+      model: z.string().max(120).optional(),
+      retrievalMode: z.enum(["graph", "vector_start", "manual"]).optional()
+    }).parse(req.body);
+    const chat = await store.update((db) => {
+      requireProject(db, req.params.projectId);
+      const item = db.chats.find((candidate) => candidate.id === req.params.chatId && candidate.projectId === req.params.projectId);
+      if (!item) {
+        throw new Error("Chat not found");
+      }
+      if (body.title !== undefined) item.title = body.title;
+      if (body.provider !== undefined) {
+        item.provider = body.provider;
+        item.providerState = {};
+      }
+      if (body.model !== undefined) {
+        item.model = body.model;
+        item.providerState = {};
+      }
+      if (body.retrievalMode !== undefined) item.retrievalMode = body.retrievalMode;
+      item.updatedAt = nowIso();
+      return item;
+    });
+    res.json({ chat });
   } catch (error) {
     next(error);
   }
@@ -717,7 +784,7 @@ app.get("/api/projects/:projectId/chats/:chatId", (req, res, next) => {
 app.post("/api/projects/:projectId/chats/:chatId/messages", async (req, res, next) => {
   try {
     const body = z.object({ content: z.string().min(1).max(8000) }).parse(req.body);
-    const result = await store.update((db) => {
+    const userMessage = await store.update((db) => {
       requireProject(db, req.params.projectId);
       const chat = db.chats.find((item) => item.id === req.params.chatId && item.projectId === req.params.projectId);
       if (!chat) {
@@ -735,30 +802,55 @@ app.post("/api/projects/:projectId/chats/:chatId/messages", async (req, res, nex
       };
       db.messages.push(userMessage);
       addChatGraphArtifacts(db, userMessage);
+      chat.updatedAt = nowIso();
+      return userMessage;
+    });
 
-      const started = Date.now();
-      const answer = createGraphAnswer(db, req.params.projectId, req.params.chatId, body.content);
-      answer.run.latencyMs = Date.now() - started;
+    const context = await buildChatContext(store.snapshot(), req.params.projectId, req.params.chatId, body.content);
+    const started = Date.now();
+    const completion = await completeChat(context.chat, context);
+    const run = createModelRun({
+      projectId: req.params.projectId,
+      chatId: req.params.chatId,
+      provider: completion.provider,
+      model: completion.model,
+      input: body.content,
+      output: completion.content,
+      contextNodes: context.contextNodes,
+      contextEdges: context.contextEdges,
+      latencyMs: Date.now() - started,
+      error: completion.error
+    });
+
+    const result = await store.update((db) => {
+      const chat = db.chats.find((item) => item.id === req.params.chatId && item.projectId === req.params.projectId);
+      if (!chat) {
+        throw new Error("Chat not found");
+      }
+      if (completion.providerState) {
+        chat.providerState = completion.providerState;
+      }
+
       const assistantMessage: Message = {
         id: createId("msg"),
         projectId: req.params.projectId,
         chatId: req.params.chatId,
         role: "assistant",
-        content: answer.answer,
-        provider: answer.run.provider,
-        model: answer.run.model,
+        content: completion.content,
+        provider: run.provider,
+        model: run.model,
         tokensIn: Math.ceil(body.content.length / 4),
-        tokensOut: Math.ceil(answer.answer.length / 4),
+        tokensOut: Math.ceil(completion.content.length / 4),
         createdAt: nowIso()
       };
 
-      db.modelRuns.push(answer.run);
+      db.modelRuns.push(run);
       db.messages.push(assistantMessage);
-      addChatGraphArtifacts(db, assistantMessage, answer.run, answer.contextNodes);
+      addChatGraphArtifacts(db, assistantMessage, run, context.contextNodes);
       chat.updatedAt = nowIso();
       refreshProjectGraphStats(db, req.params.projectId);
 
-      return { userMessage, assistantMessage, run: answer.run };
+      return { userMessage, assistantMessage, run };
     });
 
     res.status(201).json(result);
@@ -774,10 +866,10 @@ app.get("/api/models", (_req, res) => {
     .flatMap((worker) => worker.capabilities.models.map((model) => ({ provider: "ollama-worker", model, worker: worker.name })));
 
   res.json({
-    providers: [
-      { provider: "xedoc-simulator", model: "graph-mvp", status: "ready" },
-      ...workerModels.map((item) => ({ ...item, status: "worker" }))
-    ]
+    providers: getProviderOptions(db.workers.map((worker) => ({
+      ...worker,
+      status: Date.now() - Date.parse(worker.lastHeartbeatAt || "0") < 45_000 ? "online" : "offline"
+    })))
   });
 });
 

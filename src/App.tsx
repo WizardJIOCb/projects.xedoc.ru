@@ -527,9 +527,12 @@ function RepoPanel({ project, onProjectChange }: { project: Project; onProjectCh
 
 function ChatsPanel({ project }: { project: Project }) {
   const chatsState = useAsync(() => api<ChatsPayload>(`/api/projects/${project.id}/chats`), [project.id]);
+  const modelsState = useAsync(() => api<ModelsPayload>("/api/models"), []);
   const [selectedChatId, setSelectedChatId] = useState("");
   const [newChatTitle, setNewChatTitle] = useState("");
   const [content, setContent] = useState("");
+  const [sending, setSending] = useState(false);
+  const [chatError, setChatError] = useState("");
 
   const chats = chatsState.data?.chats || [];
   const selectedChat = selectedChatId || chats[0]?.id || "";
@@ -557,6 +560,19 @@ function ChatsPanel({ project }: { project: Project }) {
     await chatsState.reload();
   }
 
+  async function updateChatModel(value: string) {
+    if (!selectedChat) return;
+    const [provider, ...modelParts] = value.split("::");
+    const model = modelParts.join("::");
+    setChatError("");
+    const result = await api<{ chat: Chat }>(`/api/projects/${project.id}/chats/${selectedChat}`, {
+      method: "PATCH",
+      body: JSON.stringify({ provider, model })
+    });
+    chatState.setData((current) => current ? { ...current, chat: result.chat } : current);
+    await chatsState.reload();
+  }
+
   async function sendMessage(event: React.FormEvent) {
     event.preventDefault();
     if (!content.trim() || !selectedChat) {
@@ -564,12 +580,25 @@ function ChatsPanel({ project }: { project: Project }) {
     }
     const text = content;
     setContent("");
-    await api<MessageCreatePayload>(`/api/projects/${project.id}/chats/${selectedChat}/messages`, {
-      method: "POST",
-      body: JSON.stringify({ content: text })
-    });
-    await chatState.reload();
+    setSending(true);
+    setChatError("");
+    try {
+      await api<MessageCreatePayload>(`/api/projects/${project.id}/chats/${selectedChat}/messages`, {
+        method: "POST",
+        body: JSON.stringify({ content: text })
+      });
+      await chatState.reload();
+    } catch (error) {
+      setContent(text);
+      setChatError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSending(false);
+    }
   }
+
+  const activeModelKey = chatState.data?.chat ? `${chatState.data.chat.provider}::${chatState.data.chat.model}` : "";
+  const activeProvider = modelsState.data?.providers.find((item) => `${item.provider}::${item.model}` === activeModelKey);
+  const recentRuns = chatState.data?.runs.slice(-4).reverse() || [];
 
   return (
     <section className="chat-layout">
@@ -587,16 +616,31 @@ function ChatsPanel({ project }: { project: Project }) {
             <button key={chat.id} className={classNames("chat-row", selectedChat === chat.id && "active")} onClick={() => setSelectedChatId(chat.id)}>
               <MessageSquare size={16} />
               <span>{chat.title}</span>
-              <em>{chat.model}</em>
+              <em>{chat.provider === "xedoc-agent" ? chat.model.replace(":", " / ") : chat.model}</em>
             </button>
           ))}
         </div>
       </aside>
 
       <section className="data-panel chat-panel">
-        <div className="section-heading">
-          <BrainCircuit size={18} />
-          <h2>{chatState.data?.chat?.title || "Project chat"}</h2>
+        <div className="chat-head">
+          <div className="section-heading">
+            <BrainCircuit size={18} />
+            <h2>{chatState.data?.chat?.title || "Project chat"}</h2>
+          </div>
+          <div className="model-picker">
+            <label>
+              Agent / Model
+              <select value={activeModelKey} onChange={(event) => void updateChatModel(event.target.value)}>
+                {modelsState.data?.providers.map((provider) => (
+                  <option key={`${provider.provider}:${provider.model}`} value={`${provider.provider}::${provider.model}`}>
+                    {provider.label} {provider.configured ? "" : "(not configured)"}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <StatusPill status={activeProvider?.status || chatState.data?.chat?.provider || "model"} />
+          </div>
         </div>
         <div className="messages">
           {chatState.loading && <div className="inline-loading"><Loader2 className="spin" /> Loading chat</div>}
@@ -609,14 +653,49 @@ function ChatsPanel({ project }: { project: Project }) {
               <p>{message.content}</p>
             </article>
           ))}
+          {sending && (
+            <article className="message assistant thinking">
+              <header>
+                <strong>{chatState.data?.chat?.provider || "model"}</strong>
+                <span>building graph context</span>
+              </header>
+              <p>Собираю graph context, читаю релевантные файлы и жду ответ модели...</p>
+            </article>
+          )}
         </div>
+        {chatError && <p className="form-error chat-error">{chatError}</p>}
         <form className="composer" onSubmit={sendMessage}>
           <textarea value={content} onChange={(event) => setContent(event.target.value)} placeholder="Ask with graph context..." />
-          <button className="primary-button">
-            <Send size={16} /> Send
+          <button className="primary-button" disabled={sending || !content.trim()}>
+            {sending ? <Loader2 className="spin" size={16} /> : <Send size={16} />} Send
           </button>
         </form>
       </section>
+
+      <aside className="data-panel run-panel">
+        <div className="section-heading">
+          <Activity size={18} />
+          <h2>Runs</h2>
+        </div>
+        <div className="run-list">
+          {recentRuns.map((run) => (
+            <article key={run.id} className="run-card">
+              <header>
+                <strong>{run.provider}</strong>
+                <StatusPill status={run.status} />
+              </header>
+              <span>{run.model}</span>
+              <div>
+                <small>{run.contextNodes.length} nodes</small>
+                <small>{run.contextEdges.length} edges</small>
+                <small>{run.latencyMs}ms</small>
+              </div>
+              {run.error && <p>{run.error}</p>}
+            </article>
+          ))}
+          {!recentRuns.length && <EmptyState icon={Activity} title="No runs yet" text="Send a message to create a ModelRun." />}
+        </div>
+      </aside>
     </section>
   );
 }
@@ -792,9 +871,9 @@ function ModelsPanel() {
         {models.data?.providers.map((provider) => (
           <div className="table-row" key={`${provider.provider}-${provider.model}-${provider.worker || "local"}`}>
             <strong>{provider.provider}</strong>
-            <span>{provider.model}</span>
+            <span>{provider.label || provider.model}</span>
             <StatusPill status={provider.status} />
-            <span>{provider.worker || "server"}</span>
+            <span>{provider.worker || provider.note || "server"}</span>
           </div>
         ))}
       </div>

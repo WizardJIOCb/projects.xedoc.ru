@@ -145,6 +145,7 @@ export interface Chat {
   model: string;
   provider: string;
   retrievalMode: "graph" | "vector_start" | "manual";
+  providerState?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
 }
@@ -241,6 +242,17 @@ export interface Neighborhood {
   edges: GraphEdge[];
   startNodeId?: string;
   depth: number;
+}
+
+export interface ModelProviderOption {
+  provider: string;
+  model: string;
+  label: string;
+  status: "ready" | "missing_key" | "worker" | "simulator";
+  configured: boolean;
+  kind?: string;
+  note?: string;
+  worker?: string;
 }
 
 export interface DatabaseShape {

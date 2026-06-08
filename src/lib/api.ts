@@ -5,6 +5,7 @@ import type {
   GraphNode,
   Message,
   ModelRun,
+  ModelProviderOption,
   Neighborhood,
   Project,
   RepositoryTreeItem,
@@ -103,7 +104,7 @@ export interface WorkersPayload {
 }
 
 export interface ModelsPayload {
-  providers: Array<{ provider: string; model: string; status: string; worker?: string }>;
+  providers: ModelProviderOption[];
 }
 
 export interface MessageCreatePayload {
