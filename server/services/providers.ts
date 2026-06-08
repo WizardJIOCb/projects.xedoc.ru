@@ -177,10 +177,8 @@ async function completeWithXedocAgent(chat: Chat, model: string, context: ChatCo
       body: JSON.stringify({
         title: `${context.project.name}: ${chat.title}`.slice(0, 150),
         source: "projects-xedoc",
-        externalId: `${context.project.id}:${chat.id}`,
         agentId: process.env.XEDOC_MODEL_API_AGENT_ID,
-        repoId: process.env.XEDOC_MODEL_API_REPO_ID,
-        systemPrompt: context.systemPrompt
+        repoId: process.env.XEDOC_MODEL_API_REPO_ID
       })
     }, 30_000);
     xedocChatId = created.chatId;
