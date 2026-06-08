@@ -53,6 +53,17 @@ export async function readRepositoryTree(projectId: string, maxItems = 1600): Pr
   const repoPath = projectRepoPath(projectId);
   let count = 0;
 
+  const repoStat = await fs.stat(repoPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  });
+
+  if (!repoStat?.isDirectory()) {
+    return [];
+  }
+
   async function walk(relativePath: string): Promise<RepositoryTreeItem[]> {
     if (count > maxItems) {
       return [];
@@ -105,7 +116,12 @@ export async function readRepositoryTree(projectId: string, maxItems = 1600): Pr
 export async function readRepositoryFile(projectId: string, requestedPath: string) {
   const repoPath = projectRepoPath(projectId);
   const filePath = assertWithin(repoPath, path.join(repoPath, requestedPath));
-  const stat = await fs.stat(filePath);
+  const stat = await fs.stat(filePath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") {
+      throw new Error("Repository is not cloned yet, or the file no longer exists");
+    }
+    throw error;
+  });
   if (!stat.isFile()) {
     throw new Error("Requested path is not a file");
   }

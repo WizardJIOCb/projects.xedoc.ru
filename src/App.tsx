@@ -433,6 +433,7 @@ function RepoPanel({ project, onProjectChange }: { project: Project; onProjectCh
   const [gitUrl, setGitUrl] = useState(project.gitUrl);
   const [branch, setBranch] = useState(project.branch);
   const [busy, setBusy] = useState(false);
+  const [syncError, setSyncError] = useState("");
   const [selectedPath, setSelectedPath] = useState("");
   const [file, setFile] = useState<RepoFilePayload | undefined>();
   const treeState = useAsync(() => api<RepoTreePayload>(`/api/projects/${project.id}/repo/tree`), [project.id, project.repo.lastSyncAt]);
@@ -440,6 +441,7 @@ function RepoPanel({ project, onProjectChange }: { project: Project; onProjectCh
 
   async function syncRepo() {
     setBusy(true);
+    setSyncError("");
     try {
       const result = await api<{ project: Project }>(`/api/projects/${project.id}/repo/clone`, {
         method: "POST",
@@ -447,6 +449,8 @@ function RepoPanel({ project, onProjectChange }: { project: Project; onProjectCh
       });
       onProjectChange(result.project);
       await treeState.reload();
+    } catch (error) {
+      setSyncError(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
     }
@@ -478,6 +482,7 @@ function RepoPanel({ project, onProjectChange }: { project: Project; onProjectCh
         <button className="primary-button" onClick={syncRepo} disabled={busy || !gitUrl}>
           {busy ? <Loader2 className="spin" size={16} /> : <GitPullRequest size={16} />} Clone / Pull
         </button>
+        {syncError && <p className="form-error">{syncError}</p>}
         <div className="kv-list">
           <span>Status</span><StatusPill status={project.repo.status} />
           <span>Files</span><strong>{project.repo.files}</strong>

@@ -5,6 +5,7 @@ import { createId, nowIso, stableId } from "../lib/ids.js";
 import { dataDir } from "../lib/paths.js";
 
 const storePath = path.join(dataDir, "store.json");
+const demoRepoUrl = "https://github.com/WizardJIOCb/projects.xedoc.ru.git";
 
 function createSeedData(): DatabaseShape {
   const createdAt = nowIso();
@@ -20,7 +21,7 @@ function createSeedData(): DatabaseShape {
     id: projectId,
     name: "Xedoc Projects MVP",
     description: "Seed workspace for graph-aware project management.",
-    gitUrl: "",
+    gitUrl: demoRepoUrl,
     branch: "main",
     type: "software",
     createdAt,
@@ -191,6 +192,9 @@ export class Store {
     try {
       const content = await fs.readFile(storePath, "utf8");
       this.db = JSON.parse(content) as DatabaseShape;
+      if (this.migrate()) {
+        await this.persist();
+      }
     } catch (error) {
       const maybeNodeError = error as NodeJS.ErrnoException;
       if (maybeNodeError.code !== "ENOENT") {
@@ -200,6 +204,32 @@ export class Store {
       this.db = createSeedData();
       await this.persist();
     }
+  }
+
+  private migrate() {
+    if (!this.db) {
+      return false;
+    }
+
+    let changed = false;
+    const demoProject = this.db.projects.find((project) => project.id === "demo_xedoc");
+    if (demoProject && !demoProject.gitUrl) {
+      demoProject.gitUrl = demoRepoUrl;
+      demoProject.updatedAt = nowIso();
+      changed = true;
+    }
+
+    for (const node of this.db.graphNodes) {
+      if (node.projectId === "demo_xedoc" && node.type === "Repo" && !node.metadata.url) {
+        node.title = demoRepoUrl;
+        node.description = "GitHub repository for Xedoc Projects.";
+        node.metadata = { ...node.metadata, url: demoRepoUrl, branch: demoProject?.branch || "main" };
+        node.updatedAt = nowIso();
+        changed = true;
+      }
+    }
+
+    return changed;
   }
 
   snapshot(): DatabaseShape {
