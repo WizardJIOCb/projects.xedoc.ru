@@ -189,7 +189,7 @@ async function completeWithXedocAgent(chat: Chat, model: string, context: ChatCo
   const parsedModel = parseXedocAgentModel(model);
   const externalPrompt = limitText(
     [context.systemPrompt, "", context.userPrompt].join("\n\n"),
-    Number(process.env.XEDOC_MODEL_API_PROMPT_LIMIT || 12_000)
+    Number(process.env.XEDOC_MODEL_API_PROMPT_LIMIT || 6_000)
   );
   const result = await fetchJson<{
     finalMessage?: string;
@@ -206,18 +206,24 @@ async function completeWithXedocAgent(chat: Chat, model: string, context: ChatCo
       model: parsedModel.model,
       reasoningEffort: process.env.XEDOC_MODEL_API_REASONING_EFFORT || "low",
       speed: "standard",
-      waitMs: Number(process.env.XEDOC_MODEL_API_WAIT_MS || 120000),
+      waitMs: Number(process.env.XEDOC_MODEL_API_WAIT_MS || 1500),
       agentId: process.env.XEDOC_MODEL_API_AGENT_ID,
       repoId: process.env.XEDOC_MODEL_API_REPO_ID
     })
   }, Number(process.env.XEDOC_MODEL_API_WAIT_MS || 120000) + 10_000);
 
-  const content = result.finalMessage || result.assistantMessage?.content || `External job ${result.jobId || ""} is ${result.job?.status || "queued"}.`;
+  const content = result.finalMessage
+    || result.assistantMessage?.content
+    || [
+      `Запустил xedoc-agent job ${result.jobId || ""}.`,
+      `Статус: ${result.job?.status || "queued"}.`,
+      "Это внешний Codex/Grok/Gemini run через существующий xedoc.ru gateway; результат можно будет подтянуть следующим шагом через polling/streaming."
+    ].join("\n");
   return {
     provider: "xedoc-agent",
     model,
     content,
-    providerState: { ...chat.providerState, xedocChatId }
+    providerState: { ...chat.providerState, xedocChatId, xedocJobId: result.jobId }
   };
 }
 
