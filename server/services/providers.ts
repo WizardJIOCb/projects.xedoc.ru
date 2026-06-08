@@ -187,7 +187,10 @@ async function completeWithXedocAgent(chat: Chat, model: string, context: ChatCo
   }
 
   const parsedModel = parseXedocAgentModel(model);
-  const externalPrompt = limitText([context.systemPrompt, "", context.userPrompt].join("\n\n"), 15_800);
+  const externalPrompt = limitText(
+    [context.systemPrompt, "", context.userPrompt].join("\n\n"),
+    Number(process.env.XEDOC_MODEL_API_PROMPT_LIMIT || 12_000)
+  );
   const result = await fetchJson<{
     finalMessage?: string;
     assistantMessage?: { content?: string };
@@ -201,7 +204,7 @@ async function completeWithXedocAgent(chat: Chat, model: string, context: ChatCo
       displayPrompt: limitText(context.userMessage, 12_000),
       kind: parsedModel.kind,
       model: parsedModel.model,
-      reasoningEffort: "high",
+      reasoningEffort: process.env.XEDOC_MODEL_API_REASONING_EFFORT || "low",
       speed: "standard",
       waitMs: Number(process.env.XEDOC_MODEL_API_WAIT_MS || 120000),
       agentId: process.env.XEDOC_MODEL_API_AGENT_ID,
@@ -321,7 +324,7 @@ function localGraphAnswer(context: ChatContextPack): CompletionResult {
       `Нашёл ${context.relevantNodes.length} релевантных nodes и ${context.relevantEdges.length} edges.`,
       fileList.length ? `Файлы в контексте: ${fileList.join(", ")}.` : "Файлы в контекст не попали.",
       "",
-      "Живая модель для этого чата пока не настроена, поэтому это локальный graph fallback. Выбери `xedoc-agent`, `Gemini API`, `Grok API` или `OpenAI-compatible`, когда ключи/токены будут доступны."
+      "Живая модель не ответила или не выбрана, поэтому это локальный graph fallback. Можно выбрать `xedoc-agent`, `Gemini API`, `Grok API` или `OpenAI-compatible` в селекторе модели."
     ].join("\n");
 
   return {
