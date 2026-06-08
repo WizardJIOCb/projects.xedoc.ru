@@ -146,6 +146,28 @@ function MarkdownMessage({ content }: { content: string }) {
   );
 }
 
+function graphNodeIcon(type: GraphNode["type"]) {
+  if (type === "File" || type === "Symbol" || type === "Function" || type === "Class") {
+    return FileCode2;
+  }
+  if (type === "Directory" || type === "Repo" || type === "Branch") {
+    return FolderGit2;
+  }
+  if (type === "Chat" || type === "Message") {
+    return MessageSquare;
+  }
+  if (type === "ModelRun" || type === "Agent" || type === "Model" || type === "Provider") {
+    return Bot;
+  }
+  return CircleDot;
+}
+
+function graphNodeSubtitle(node: GraphNode) {
+  const path = typeof node.metadata.path === "string" ? node.metadata.path : "";
+  const language = typeof node.metadata.language === "string" ? node.metadata.language : "";
+  return [path || node.description || node.source, language].filter(Boolean).join(" - ");
+}
+
 function AuthGate({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<SessionPayload | undefined>();
   const [tokenInput, setTokenInput] = useState(getToken());
@@ -571,6 +593,7 @@ function ChatsPanel({ project }: { project: Project }) {
     () => selectedChat ? api<ChatPayload>(`/api/projects/${project.id}/chats/${selectedChat}`) : Promise.resolve({ chat: undefined as unknown as Chat, messages: [], runs: [] }),
     [project.id, selectedChat]
   );
+  const graphState = useAsync(() => api<GraphPayload>(`/api/projects/${project.id}/graph`), [project.id]);
 
   useEffect(() => {
     if (!selectedChatId && chats[0]) {
@@ -645,6 +668,19 @@ function ChatsPanel({ project }: { project: Project }) {
   const activeProvider = modelsState.data?.providers.find((item) => `${item.provider}::${item.model}` === activeModelKey);
   const recentRuns = chatState.data?.runs.slice(-4).reverse() || [];
   const activeProviderLabel = activeProvider?.label || (chatState.data?.chat ? `${chatState.data.chat.provider} / ${formatModelName(chatState.data.chat.model)}` : "Select a model");
+  const graphNodesById = useMemo(() => new Map((graphState.data?.nodes || []).map((node) => [node.id, node])), [graphState.data]);
+  const latestRun = recentRuns[0];
+  const contextNodes = useMemo(() => {
+    if (!latestRun) {
+      return [];
+    }
+    return latestRun.contextNodes
+      .map((nodeId) => graphNodesById.get(nodeId))
+      .filter((node): node is GraphNode => Boolean(node))
+      .slice(0, 10);
+  }, [latestRun, graphNodesById]);
+  const messages = chatState.data?.messages || [];
+  const configuredModelCount = modelsState.data?.providers.filter((provider) => provider.configured).length || 0;
 
   return (
     <section className="chat-layout">
@@ -661,18 +697,29 @@ function ChatsPanel({ project }: { project: Project }) {
           {chats.map((chat) => (
             <button key={chat.id} className={classNames("chat-row", selectedChat === chat.id && "active")} onClick={() => setSelectedChatId(chat.id)}>
               <MessageSquare size={16} />
-              <span>{chat.title}</span>
-              <em>{chat.provider === "xedoc-agent" ? chat.model.replace(":", " / ") : chat.model}</em>
+              <span>
+                <strong>{chat.title}</strong>
+                <em>{chat.provider} / {formatModelName(chat.model)}</em>
+              </span>
+              <ChevronRight size={15} />
             </button>
           ))}
+          {!chatsState.loading && chats.length === 0 && <EmptyState icon={MessageSquare} title="No chats yet" text="Create a thread for this project." />}
         </div>
       </aside>
 
       <section className="data-panel chat-panel">
         <div className="chat-head">
-          <div className="section-heading">
-            <BrainCircuit size={18} />
-            <h2>{chatState.data?.chat?.title || "Project chat"}</h2>
+          <div className="chat-title">
+            <div className="section-heading">
+              <BrainCircuit size={18} />
+              <h2>{chatState.data?.chat?.title || "Project chat"}</h2>
+            </div>
+            <div className="chat-head-metrics">
+              <span>{messages.length} messages</span>
+              <span>{recentRuns.length} recent runs</span>
+              <span>{project.graph.totalNodes} graph nodes</span>
+            </div>
           </div>
           <div className="model-picker">
             <label>
@@ -697,7 +744,7 @@ function ChatsPanel({ project }: { project: Project }) {
         </div>
         <div className="messages">
           {chatState.loading && <div className="inline-loading"><Loader2 className="spin" /> Loading chat</div>}
-          {chatState.data?.messages.map((message: Message) => (
+          {messages.map((message: Message) => (
             <article key={message.id} className={classNames("message", message.role)}>
               <header>
                 <strong>{message.role}</strong>
@@ -725,36 +772,80 @@ function ChatsPanel({ project }: { project: Project }) {
         </form>
       </section>
 
-      <aside className="data-panel run-panel">
-        <div className="section-heading">
-          <Activity size={18} />
-          <h2>Runs</h2>
+      <aside className="data-panel context-panel">
+        <div className="context-panel-head">
+          <div className="section-heading">
+            <Database size={18} />
+            <h2>Context</h2>
+          </div>
+          <button className="icon-button mini" onClick={() => void chatState.reload()} title="Refresh chat context">
+            <RefreshCw size={14} />
+          </button>
         </div>
-        <div className="run-list">
-          {recentRuns.map((run) => (
-            <article key={run.id} className="run-card">
-              <header>
-                <strong>{run.provider}</strong>
-                <div className="run-actions">
-                  {run.provider === "xedoc-agent" && (
-                    <button className="icon-button mini" onClick={() => void refreshRun(run.id)} title="Refresh external job">
-                      {refreshingRunId === run.id ? <Loader2 className="spin" size={14} /> : <RefreshCw size={14} />}
-                    </button>
-                  )}
-                  <StatusPill status={run.status} />
+
+        <div className="context-stats">
+          <div><span>Ready models</span><strong>{configuredModelCount}</strong></div>
+          <div><span>Graph health</span><strong>{project.graph.health}</strong></div>
+          <div><span>Files</span><strong>{project.repo.files}</strong></div>
+        </div>
+
+        <section className="context-block">
+          <h3><Bot size={15} /> Active model</h3>
+          <div className="context-model-row">
+            <strong>{activeProviderLabel}</strong>
+            <StatusPill status={activeProvider?.status || "model"} />
+          </div>
+          <p>{activeProvider?.note || "The selected provider receives graph context for every new message."}</p>
+        </section>
+
+        <section className="context-block">
+          <h3><Network size={15} /> Retrieved context</h3>
+          {graphState.loading && <div className="inline-loading"><Loader2 className="spin" /> Loading graph</div>}
+          {!graphState.loading && !contextNodes.length && <p className="subtle">Send a message to see the graph nodes used by the latest run.</p>}
+          <div className="context-node-list">
+            {contextNodes.map((node) => {
+              const NodeIcon = graphNodeIcon(node.type);
+              return (
+                <div key={node.id} className="context-node-row">
+                  <NodeIcon size={14} />
+                  <span>
+                    <strong>{node.title}</strong>
+                    <em>{node.type} - {graphNodeSubtitle(node)}</em>
+                  </span>
                 </div>
-              </header>
-              <span>{run.model}</span>
-              <div>
-                <small>{run.contextNodes.length} nodes</small>
-                <small>{run.contextEdges.length} edges</small>
-                <small>{run.latencyMs}ms</small>
-              </div>
-              {run.error && <p>{run.error}</p>}
-            </article>
-          ))}
-          {!recentRuns.length && <EmptyState icon={Activity} title="No runs yet" text="Send a message to create a ModelRun." />}
-        </div>
+              );
+            })}
+          </div>
+        </section>
+
+        <section className="context-block">
+          <h3><Activity size={15} /> Model runs</h3>
+          <div className="run-list compact">
+            {recentRuns.map((run) => (
+              <article key={run.id} className="run-card">
+                <header>
+                  <strong>{run.provider}</strong>
+                  <div className="run-actions">
+                    {run.provider === "xedoc-agent" && (
+                      <button className="icon-button mini" onClick={() => void refreshRun(run.id)} title="Refresh external job">
+                        {refreshingRunId === run.id ? <Loader2 className="spin" size={14} /> : <RefreshCw size={14} />}
+                      </button>
+                    )}
+                    <StatusPill status={run.status} />
+                  </div>
+                </header>
+                <span>{formatModelName(run.model)}</span>
+                <div>
+                  <small>{run.contextNodes.length} nodes</small>
+                  <small>{run.contextEdges.length} edges</small>
+                  <small>{run.latencyMs}ms</small>
+                </div>
+                {run.error && <p>{run.error}</p>}
+              </article>
+            ))}
+            {!recentRuns.length && <EmptyState icon={Activity} title="No runs yet" text="Send a message to create a ModelRun." />}
+          </div>
+        </section>
       </aside>
     </section>
   );
