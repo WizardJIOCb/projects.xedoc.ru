@@ -29,9 +29,11 @@ import {
   Trash2
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import ReactMarkdown from "react-markdown";
 import { Navigate, NavLink, Route, BrowserRouter as Router, Routes, useNavigate, useParams } from "react-router-dom";
 import { Background, Controls, MiniMap, ReactFlow, type Edge, type Node, type NodeMouseHandler } from "@xyflow/react";
-import type { Chat, GraphEdge, GraphNode, Message, Project, RepositoryTreeItem } from "../shared/types";
+import remarkGfm from "remark-gfm";
+import type { Chat, GraphEdge, GraphNode, Message, ModelProviderOption, Project, RepositoryTreeItem } from "../shared/types";
 import {
   ApiError,
   api,
@@ -112,6 +114,34 @@ function EmptyState({ icon: Icon, title, text }: { icon: typeof CircleDot; title
       <Icon size={28} />
       <strong>{title}</strong>
       <span>{text}</span>
+    </div>
+  );
+}
+
+function formatModelName(model?: string) {
+  if (!model) {
+    return "";
+  }
+  return model.includes(":") ? model.replace(":", " / ") : model;
+}
+
+function formatMessageSource(message: Message, providers?: ModelProviderOption[]) {
+  if (message.role === "user") {
+    return "local";
+  }
+
+  if (message.provider && message.model) {
+    const option = providers?.find((item) => item.provider === message.provider && item.model === message.model);
+    return option?.label || `${message.provider} / ${formatModelName(message.model)}`;
+  }
+
+  return message.provider || formatModelName(message.model) || message.role;
+}
+
+function MarkdownMessage({ content }: { content: string }) {
+  return (
+    <div className="markdown-body">
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
     </div>
   );
 }
@@ -614,6 +644,7 @@ function ChatsPanel({ project }: { project: Project }) {
   const activeModelKey = chatState.data?.chat ? `${chatState.data.chat.provider}::${chatState.data.chat.model}` : "";
   const activeProvider = modelsState.data?.providers.find((item) => `${item.provider}::${item.model}` === activeModelKey);
   const recentRuns = chatState.data?.runs.slice(-4).reverse() || [];
+  const activeProviderLabel = activeProvider?.label || (chatState.data?.chat ? `${chatState.data.chat.provider} / ${formatModelName(chatState.data.chat.model)}` : "Select a model");
 
   return (
     <section className="chat-layout">
@@ -655,6 +686,13 @@ function ChatsPanel({ project }: { project: Project }) {
               </select>
             </label>
             <StatusPill status={activeProvider?.status || chatState.data?.chat?.provider || "model"} />
+            <p className="model-note">
+              <Bot size={14} />
+              <span>
+                Replies as <strong>{activeProviderLabel}</strong>
+                {activeProvider?.note ? ` - ${activeProvider.note}` : ""}
+              </span>
+            </p>
           </div>
         </div>
         <div className="messages">
@@ -663,18 +701,18 @@ function ChatsPanel({ project }: { project: Project }) {
             <article key={message.id} className={classNames("message", message.role)}>
               <header>
                 <strong>{message.role}</strong>
-                <span>{message.provider || "local"} {formatDate(message.createdAt)}</span>
+                <span className="message-meta">{formatMessageSource(message, modelsState.data?.providers)} - {formatDate(message.createdAt)}</span>
               </header>
-              <p>{message.content}</p>
+              <MarkdownMessage content={message.content} />
             </article>
           ))}
           {sending && (
             <article className="message assistant thinking">
               <header>
-                <strong>{chatState.data?.chat?.provider || "model"}</strong>
+                <strong>assistant</strong>
                 <span>building graph context</span>
               </header>
-              <p>Собираю graph context, читаю релевантные файлы и жду ответ модели...</p>
+              <p>Building graph context, reading relevant files, and waiting for the model...</p>
             </article>
           )}
         </div>
