@@ -17,6 +17,14 @@ const CODEX_MODEL_OPTIONS = [
   { value: "gpt-5.3-codex", label: "GPT-5.3 Codex" }
 ];
 
+const XEDOC_GROK_MODEL_OPTIONS = [
+  { value: "default", label: "Gateway Default" }
+];
+
+const XEDOC_GEMINI_MODEL_OPTIONS = [
+  { value: "default", label: "Gateway Default" }
+];
+
 const GROK_MODEL_OPTIONS = [
   { value: "grok-build", label: "Grok Build" },
   { value: "grok-build-latest", label: "Grok Build Latest" },
@@ -49,8 +57,8 @@ function timeoutSignal(ms: number) {
 export function getProviderOptions(workers: WorkerInfo[] = []): ModelProviderOption[] {
   const xedocConfigured = configured(process.env.XEDOC_MODEL_API_BASE) && configured(process.env.XEDOC_MODEL_API_TOKEN);
   const openAiConfigured = configured(process.env.OPENAI_API_KEY);
-  const xaiConfigured = configured(process.env.XAI_API_KEY);
-  const geminiConfigured = configured(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);
+  const xaiConfigured = configured(process.env.XAI_API_KEY || process.env.GROK_API_KEY);
+  const geminiConfigured = configured(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY);
   const options: ModelProviderOption[] = [
     ...CODEX_MODEL_OPTIONS.map((model) => ({
       provider: "xedoc-agent",
@@ -61,23 +69,23 @@ export function getProviderOptions(workers: WorkerInfo[] = []): ModelProviderOpt
       kind: "codex",
       note: "Existing xedoc.ru agent gateway"
     })),
-    ...GROK_MODEL_OPTIONS.slice(0, 2).map((model) => ({
+    ...XEDOC_GROK_MODEL_OPTIONS.map((model) => ({
       provider: "xedoc-agent",
       model: `grok:${model.value}`,
       label: `Grok Agent / ${model.label}`,
       status: xedocConfigured ? "ready" as const : "missing_key" as const,
       configured: xedocConfigured,
       kind: "grok",
-      note: "Existing xedoc.ru agent gateway"
+      note: "Existing xedoc.ru agent gateway default"
     })),
-    ...GEMINI_MODEL_OPTIONS.slice(0, 3).map((model) => ({
+    ...XEDOC_GEMINI_MODEL_OPTIONS.map((model) => ({
       provider: "xedoc-agent",
-      model: `gemini:${model.value}`,
+      model: `gemini-cli:${model.value}`,
       label: `Gemini Agent / ${model.label}`,
       status: xedocConfigured ? "ready" as const : "missing_key" as const,
       configured: xedocConfigured,
-      kind: "gemini",
-      note: "Existing xedoc.ru agent gateway"
+      kind: "gemini-cli",
+      note: "Existing xedoc.ru agent gateway default"
     })),
     ...CODEX_MODEL_OPTIONS.map((model) => ({
       provider: "codex",
@@ -88,7 +96,7 @@ export function getProviderOptions(workers: WorkerInfo[] = []): ModelProviderOpt
       kind: "openai-compatible",
       note: "Uses OPENAI_API_KEY"
     })),
-    { provider: "grok", model: "grok-4", label: "xAI API / Grok 4", status: xaiConfigured ? "ready" : "missing_key", configured: xaiConfigured, kind: "openai-compatible", note: "Uses XAI_API_KEY" },
+    { provider: "grok", model: "grok-4", label: "xAI API / Grok 4", status: xaiConfigured ? "ready" : "missing_key", configured: xaiConfigured, kind: "openai-compatible", note: "Uses XAI_API_KEY or GROK_API_KEY" },
     ...GEMINI_MODEL_OPTIONS.map((model) => ({
       provider: "gemini",
       model: model.value,
@@ -96,7 +104,7 @@ export function getProviderOptions(workers: WorkerInfo[] = []): ModelProviderOpt
       status: geminiConfigured ? "ready" as const : "missing_key" as const,
       configured: geminiConfigured,
       kind: "gemini",
-      note: "Uses GEMINI_API_KEY or GOOGLE_API_KEY"
+      note: "Uses GEMINI_API_KEY, GOOGLE_API_KEY, or GOOGLE_GENERATIVE_AI_API_KEY"
     })),
     { provider: "xedoc-simulator", model: "graph-mvp", label: "Local graph fallback", status: "simulator", configured: true, kind: "local", note: "No external key required" }
   ];
@@ -128,10 +136,16 @@ export function defaultChatSelection() {
 
 function parseXedocAgentModel(model: string) {
   const [kind, ...rest] = model.split(":");
-  const resolvedKind = ["codex", "grok", "gemini-cli", "gemini"].includes(kind) ? kind : "codex";
+  const rawModel = rest.join(":") || model;
+  const resolvedKind = kind === "gemini"
+    ? "gemini-cli"
+    : ["codex", "grok", "gemini-cli"].includes(kind) ? kind : "codex";
+  const shouldUseGatewayDefault = rawModel === "default"
+    || (resolvedKind === "grok" && rawModel.startsWith("grok-"))
+    || (resolvedKind === "gemini-cli" && rawModel.startsWith("gemini-"));
   return {
     kind: resolvedKind,
-    model: rest.join(":") || model
+    model: shouldUseGatewayDefault ? "" : rawModel
   };
 }
 
@@ -190,6 +204,20 @@ async function completeWithXedocAgent(chat: Chat, model: string, context: ChatCo
     [context.systemPrompt, "", context.userPrompt].join("\n\n"),
     Number(process.env.XEDOC_MODEL_API_PROMPT_LIMIT || 6_000)
   );
+  const requestBody: Record<string, unknown> = {
+    prompt: externalPrompt,
+    displayPrompt: limitText(context.userMessage, 12_000),
+    kind: parsedModel.kind,
+    reasoningEffort: process.env.XEDOC_MODEL_API_REASONING_EFFORT || "low",
+    speed: "standard",
+    waitMs: Number(process.env.XEDOC_MODEL_API_WAIT_MS || 0),
+    agentId: process.env.XEDOC_MODEL_API_AGENT_ID,
+    repoId: process.env.XEDOC_MODEL_API_REPO_ID
+  };
+  if (parsedModel.model) {
+    requestBody.model = parsedModel.model;
+  }
+
   const result = await fetchJson<{
     finalMessage?: string;
     assistantMessage?: { content?: string };
@@ -198,17 +226,7 @@ async function completeWithXedocAgent(chat: Chat, model: string, context: ChatCo
   }>(`${base}/api/external/model/chats/${encodeURIComponent(xedocChatId)}/messages`, {
     method: "POST",
     headers,
-    body: JSON.stringify({
-      prompt: externalPrompt,
-      displayPrompt: limitText(context.userMessage, 12_000),
-      kind: parsedModel.kind,
-      model: parsedModel.model,
-      reasoningEffort: process.env.XEDOC_MODEL_API_REASONING_EFFORT || "low",
-      speed: "standard",
-      waitMs: Number(process.env.XEDOC_MODEL_API_WAIT_MS || 0),
-      agentId: process.env.XEDOC_MODEL_API_AGENT_ID,
-      repoId: process.env.XEDOC_MODEL_API_REPO_ID
-    })
+    body: JSON.stringify(requestBody)
   }, Number(process.env.XEDOC_MODEL_API_WAIT_MS || 120000) + 10_000);
 
   const content = result.finalMessage
@@ -249,7 +267,7 @@ export async function refreshXedocAgentJob(jobId: string) {
 
 async function completeOpenAICompatible(provider: string, model: string, context: ChatContextPack): Promise<CompletionResult> {
   const isGrok = provider === "grok";
-  const apiKey = isGrok ? process.env.XAI_API_KEY : process.env.OPENAI_API_KEY;
+  const apiKey = isGrok ? process.env.XAI_API_KEY || process.env.GROK_API_KEY : process.env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new Error(isGrok ? "XAI_API_KEY is not configured" : "OPENAI_API_KEY is not configured");
   }
@@ -284,9 +302,9 @@ async function completeOpenAICompatible(provider: string, model: string, context
 }
 
 async function completeGemini(model: string, context: ChatContextPack): Promise<CompletionResult> {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY;
   if (!apiKey) {
-    throw new Error("GEMINI_API_KEY or GOOGLE_API_KEY is not configured");
+    throw new Error("GEMINI_API_KEY, GOOGLE_API_KEY, or GOOGLE_GENERATIVE_AI_API_KEY is not configured");
   }
 
   const payload: Record<string, unknown> = {

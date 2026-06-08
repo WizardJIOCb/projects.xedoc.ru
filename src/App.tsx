@@ -627,8 +627,7 @@ function ChatsPanel({ project }: { project: Project }) {
     await chatsState.reload();
   }
 
-  async function sendMessage(event: React.FormEvent) {
-    event.preventDefault();
+  async function submitMessage() {
     if (!content.trim() || !selectedChat) {
       return;
     }
@@ -648,6 +647,11 @@ function ChatsPanel({ project }: { project: Project }) {
     } finally {
       setSending(false);
     }
+  }
+
+  async function sendMessage(event: React.FormEvent) {
+    event.preventDefault();
+    await submitMessage();
   }
 
   async function refreshRun(runId: string) {
@@ -765,7 +769,17 @@ function ChatsPanel({ project }: { project: Project }) {
         </div>
         {chatError && <p className="form-error chat-error">{chatError}</p>}
         <form className="composer" onSubmit={sendMessage}>
-          <textarea value={content} onChange={(event) => setContent(event.target.value)} placeholder="Ask with graph context..." />
+          <textarea
+            value={content}
+            onChange={(event) => setContent(event.target.value)}
+            onKeyDown={(event) => {
+              if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+                event.preventDefault();
+                void submitMessage();
+              }
+            }}
+            placeholder="Ask with graph context..."
+          />
           <button className="primary-button" disabled={sending || !content.trim()}>
             {sending ? <Loader2 className="spin" size={16} /> : <Send size={16} />} Send
           </button>
